@@ -454,7 +454,7 @@
                 <select id="clip-length"><option value="30">حتى 30 ثانية</option><option value="45" selected>حتى 45 ثانية</option><option value="60">حتى 60 ثانية</option></select>
               </label>
               <label for="subtitle-language">لغة الترجمة
-                <select id="subtitle-language"><option value="ar" selected>العربية</option><option value="en">English</option><option value="original">لغة الفيديو</option></select>
+                <select id="subtitle-language"><option value="original" selected>لغة الفيديو (بدون ترجمة — أسرع)</option><option value="ar">العربية</option><option value="en">English</option></select>
               </label>
               <label for="aspect-ratio">مقاس الفيديو
                 <select id="aspect-ratio"><option value="9:16" selected>عمودي 9:16</option><option value="1:1">مربّع 1:1</option><option value="16:9">أفقي 16:9</option></select>
@@ -468,7 +468,7 @@
                   <select id="speech-language"><option value="auto">تلقائي (عربي / إنجليزي)</option><option value="ar">العربية</option><option value="en">الإنجليزية</option><option value="fr">الفرنسية</option><option value="es">الإسبانية</option><option value="tr">التركية</option><option value="de">الألمانية</option></select>
                 </label>
                 <label for="model-choice">نموذج تفريغ الصوت
-                  <select id="model-choice"><option value="Xenova/whisper-base">Whisper base — متوازن</option><option value="Xenova/whisper-tiny">Whisper tiny — أخف</option></select>
+                  <select id="model-choice"><option value="Xenova/whisper-tiny" selected>Whisper tiny — أسرع وأخف</option><option value="Xenova/whisper-base">Whisper base — دقة أعلى وأبطأ</option></select>
                 </label>
                 <label class="full" for="frame-fit">ملاءمة الصورة
                   <select id="frame-fit"><option value="contain">الصورة كاملة مع خلفية مموّهة</option><option value="cover">ملء الإطار (قصّ من المنتصف)</option></select>
@@ -480,7 +480,7 @@
                 <span id="subtitle-status">عند توفره، نتجاوز تفريغ الصوت.</span>
                 <button type="button" id="remove-subtitle" aria-label="إزالة ملف الترجمة" hidden><svg class="icon sm"><use href="#i-close"/></svg></button>
               </div>
-              <p class="model-note">تُحمّل النماذج المجانية عند أول استخدام، وقد تحتاج مئات الميغابايت ووقتاً حسب جهازك. الترجمة بين اللغات تستخدم نموذج NLLB إضافياً. يُفضّل متصفح حديث على الحاسوب.</p>
+              <p class="model-note">لتسريع العمل اخترنا Whisper Tiny افتراضياً، والترجمة متوقفة افتراضياً لتجنب تنزيل نموذج NLLB الكبير. تُحفظ ملفات النماذج في ذاكرة التخزين المؤقت للمتصفح بعد تنزيلها، ونطلب من المتصفح الاحتفاظ بها. لا تمسح بيانات الموقع أو ذاكرة التخزين المؤقت حتى لا تحتاج إلى تنزيلها مجدداً. <span id="model-cache-status">جارٍ التحقق من إعداد حفظ النماذج…</span></p>
             </details>
 
             <button class="button primary analyze-button" type="submit" id="analyze-btn"><span class="spacer"></span><svg class="icon"><use href="#i-spark"/></svg><span id="analyze-label">استخرج أفضل 5 لقطات</span><svg class="icon arrow"><use href="#i-arrow"/></svg></button>
@@ -634,6 +634,7 @@
         api = await import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.5.2');
         api.env.allowLocalModels = false;
         api.env.useBrowserCache = true;
+        api.env.useWasmCache = true;
         if (api.env.backends?.onnx?.wasm) api.env.backends.onnx.wasm.numThreads = 1;
       }
       return api;
@@ -659,7 +660,7 @@
           const result = await transcriber(new Float32Array(data.audio), options);
           self.postMessage({id, event:'result', result});
         } else if (type === 'translate') {
-          if (transcriber) { await transcriber.dispose(); transcriber = null; currentModel = ''; }
+          // Keep Whisper loaded; the browser cache also retains downloaded model files.
           if (!translator) {
             progress({kind:'loading', message:'تحميل نموذج الترجمة متعدد اللغات. قد يكون التنزيل كبيراً…'});
             translator = await pipeline('translation','Xenova/nllb-200-distilled-600M',{
@@ -1763,6 +1764,21 @@
       }catch{$('library-total').textContent='0';}
     }
     refreshLibrary();
+
+    // Ask the browser to make this origin's model cache persistent where supported.
+    (async()=>{
+      const status=$('model-cache-status');
+      try {
+        if (!navigator.storage) { status.textContent='هذا المتصفح لا يتيح طلب التخزين الدائم؛ سيظل التخزين المؤقت خاضعاً لسياسة المتصفح.'; return; }
+        let persisted=false;
+        if (navigator.storage.persisted) persisted=await navigator.storage.persisted();
+        if (!persisted && navigator.storage.persist) persisted=await navigator.storage.persist();
+        const estimate=navigator.storage.estimate?await navigator.storage.estimate():null;
+        const used=estimate?.usage, quota=estimate?.quota;
+        const space=(used!=null&&quota!=null)?` المساحة المستخدمة حالياً ${formatSize(used)} من ${formatSize(quota)}.`:'';
+        status.textContent=(persisted?'تم تفعيل طلب الاحتفاظ بملفات النماذج وعدم حذفها تلقائياً.':'تم تفعيل ذاكرة النماذج المؤقتة، لكن المتصفح لم يمنح تخزيناً دائماً.')+space;
+      } catch { status.textContent='ذاكرة النماذج المؤقتة مفعّلة، لكن تعذّر التحقق من التخزين الدائم.'; }
+    })();
 
     window.addEventListener('beforeunload',e=>{
       if(state.busy||state.exporting){e.preventDefault();e.returnValue='';}
